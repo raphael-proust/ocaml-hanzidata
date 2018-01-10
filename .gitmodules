@@ -1,0 +1,3 @@
+[submodule "makemeahanzi"]
+	path = makemeahanzi
+	url = git@github.com:skishore/makemeahanzi.git
