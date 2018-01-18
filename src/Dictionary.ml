@@ -315,3 +315,60 @@ let read ?(path = "./makemeahanzi/dictionary.txt") () =
    close_in ic;
    entries
 ;;
+
+let rec walk_decomposition d w =
+   match w, d with
+   | _, Unknown -> None
+   | [], Component u -> Some u
+   | 0 :: wt,
+      ( LeftRight (dt, _)
+      | AboveBelow (dt, _)
+      | LeftMiddleRight (dt, _, _)
+      | AboveMiddleBelow (dt, _, _)
+      | FullSurround (dt, _)
+      | AboveSurround (dt, _)
+      | BelowSurround (dt, _)
+      | LeftSurround (dt, _)
+      | UpperLeftSurround (dt, _)
+      | UpperRightSurround (dt, _)
+      | LowerLeftSurround (dt, _)
+      | Overlaid (dt, _)
+      ) -> walk_decomposition dt wt
+   | 1 :: wt,
+      ( LeftRight (_, dt)
+      | AboveBelow (_, dt)
+      | LeftMiddleRight (_, dt, _)
+      | AboveMiddleBelow (_, dt, _)
+      | FullSurround (_, dt)
+      | AboveSurround (_, dt)
+      | BelowSurround (_, dt)
+      | LeftSurround (_, dt)
+      | UpperLeftSurround (_, dt)
+      | UpperRightSurround (_, dt)
+      | LowerLeftSurround (_, dt)
+      | Overlaid (_, dt)
+      ) -> walk_decomposition dt wt
+   | 2 :: wt,
+      ( LeftMiddleRight (_, _, dt)
+      | AboveMiddleBelow (_, _, dt)
+      ) -> walk_decomposition dt wt
+   | 2 :: _,
+      ( LeftRight _
+      | AboveBelow _
+      | FullSurround _
+      | AboveSurround _
+      | BelowSurround _
+      | LeftSurround _
+      | UpperLeftSurround _
+      | UpperRightSurround _
+      | LowerLeftSurround _
+      | Overlaid _
+      ) -> raise (Invalid_argument "Dictionary.walk_decomposition walk is out of decomposition")
+   | _ :: _, Component _ -> raise (Invalid_argument "Dictionary.walk_decomposition walk is too long")
+   | [], _ -> raise (Invalid_argument "Dictionary.walk_decomposition walk is too short")
+   | n :: _, _ ->
+      assert (n < 0 || n > 2);
+      raise (Invalid_argument "Dictionary.walk_decomposition Invalid decomposition index")
+;;
+
+
