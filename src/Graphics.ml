@@ -5,7 +5,7 @@ type entry = {
    medians: (int * int) list list;
 }
 
-module Decoding : sig
+module Parsing : sig
 
    exception Error of string
    val entry_of_string: string -> entry
@@ -14,7 +14,7 @@ end = struct
 
    exception Error of string
    ;;
-   let decoding_error_of_jsonm_error e =
+   let parsing_error_of_jsonm_error e =
       Jsonm.pp_error Format.str_formatter e;
       let e = Format.flush_str_formatter () in
       Error e
@@ -22,11 +22,11 @@ end = struct
    let handle_other_cases other_lexeme_message = function
       | `Lexeme _ -> raise (Error other_lexeme_message)
       | `End -> raise (Error "Unexpected early end")
-      | `Error e -> raise (decoding_error_of_jsonm_error e)
+      | `Error e -> raise (parsing_error_of_jsonm_error e)
       | `Await -> assert false (* the sources are never `Manual *)
    ;;
 
-   let decode_character jdecoder =
+   let parse_character jdecoder =
       match Jsonm.decode jdecoder with
       | `Lexeme (`String s) -> begin
          let udecoder = Uutf.decoder (`String s) in
@@ -44,7 +44,7 @@ end = struct
          end
       | j -> handle_other_cases "Expected string value for character field" j
    ;;
-   let decode_strokes jdecoder =
+   let parse_strokes jdecoder =
       match Jsonm.decode jdecoder with
       | `Lexeme `As ->
          let rec loop ss =
@@ -56,23 +56,17 @@ end = struct
          loop []
       | j -> handle_other_cases "Expected array in pinyin field" j
    ;;
-   let decode_coordinate jdecoder =
-      match Jsonm.decode jdecoder with
-      | `Lexeme (`Float fx) -> begin
-         let x = int_of_float fx in
-         match Jsonm.decode jdecoder with
-         | `Lexeme (`Float fy) ->
-            let y = int_of_float fy in
-            (x,y)
-         | j -> handle_other_cases "Expected a number in second component of coordinate" j
-         end
-      | j -> handle_other_cases "Expected a number in first component of coordinate" j
+   let parse_coordinate =
+      let open Helpers.Parsing in
+      int "Expected a number as first coordinate" >>= fun x ->
+      int "Expected a number as second coordinate" >>= fun y ->
+      return (x,y)
    ;;
-   let decode_coordinate_list jdecoder =
+   let parse_coordinate_list jdecoder =
       let rec loop coords =
          match Jsonm.decode jdecoder with
          | `Lexeme `As -> begin
-            let coord = decode_coordinate jdecoder in
+            let coord = parse_coordinate jdecoder in
             match Jsonm.decode jdecoder with
             | `Lexeme `Ae -> loop (coord :: coords)
             | j -> handle_other_cases "Expected end of array after coordinates" j
@@ -82,19 +76,16 @@ end = struct
       in
       loop []
    ;;
-   let decode_medians jdecoder =
+   let parse_medians jdecoder =
       match Jsonm.decode jdecoder with
-      | `Lexeme `As -> begin
-         let rec loop meds =
-            match Jsonm.decode jdecoder with
-            | `Lexeme `As ->
-               let med = decode_coordinate_list jdecoder in
-               loop (med :: meds)
-            | `Lexeme `Ae -> List.rev meds
+      | `Lexeme `As as las ->
+         Helpers.Parsing.array
+            (function
+            | `Lexeme `As -> parse_coordinate_list
             | j -> handle_other_cases "Expected array of coordinates in median" j
-         in
-         loop []
-         end
+            )
+            las
+            jdecoder
       | j -> handle_other_cases "Expected array in medians" j
    ;;
 
@@ -105,32 +96,18 @@ end = struct
       let jdecoder = Jsonm.decoder (`String s) in
 
       (* Decoder for a whole entry *)
-      let entry =
-         match Jsonm.decode jdecoder with
-         | `Lexeme `Os -> begin
-         match Jsonm.decode jdecoder with
-         | `Lexeme (`Name "character") -> begin
-            let character = decode_character jdecoder in
-            match Jsonm.decode jdecoder with
-            | `Lexeme (`Name "strokes") -> begin
-               let strokes = decode_strokes jdecoder in
-               match Jsonm.decode jdecoder with
-               | `Lexeme (`Name "medians") ->
-                  let medians = decode_medians jdecoder in
-
-                  { character; strokes; medians; }
-
-               | j -> handle_other_cases "Expected medians component" j
-               end
-            | j -> handle_other_cases "Expected strokes component" j
-            end
-         | j -> handle_other_cases "Expected character component" j
-         end
-         | j -> handle_other_cases "Expected object in entry" j
-      in
-      match Jsonm.decode jdecoder with
-      | `Lexeme `Oe -> entry
-      | j -> handle_other_cases "Expected end of object after components" j
+      let open Helpers.Parsing in
+      run (
+         eat `Os "Expected object in entry" >>= fun () ->
+         eat (`Name "character") "Expected character component" >>= fun () ->
+         parse_character >>= fun character ->
+         eat (`Name "strokes") "Expected strokes component" >>= fun () ->
+         parse_strokes >>= fun strokes ->
+         eat (`Name "medians") "Expected medians component" >>= fun () ->
+         parse_medians >>= fun medians ->
+         eat `Oe "Expected end of object after components" >>= fun () ->
+         return { character; strokes; medians; }
+      ) jdecoder
    ;;
 
 
@@ -139,19 +116,18 @@ end
 
 let read ?n ?(path = "./makemeahanzi/graphics.txt") () =
    let ic = open_in path in
-   let rec line_loop decoded_lines =
+   let rec line_loop parsed_lines =
       try begin
          let line = input_line ic in
          try
-            let decoded_line = Decoding.entry_of_string line in
-            line_loop (decoded_line :: decoded_lines)
+            let parsed_line = Parsing.entry_of_string line in
+            line_loop (parsed_line :: parsed_lines)
          with
-            | Decoding.Error e ->
+            | Parsing.Error e ->
                Printf.fprintf stderr "line: %s\nerror: %s\n%!" line e;
-               line_loop decoded_lines
+               line_loop parsed_lines
       end with
-         | End_of_file -> List.rev decoded_lines
-
+         | End_of_file -> List.rev parsed_lines
    in
    let entries = line_loop [] in
    close_in ic;

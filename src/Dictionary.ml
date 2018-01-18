@@ -26,79 +26,60 @@ type entry = {
    matches: int list option list;
 }
 
-module Decoding : sig
+module Parsing : sig
 
-   exception Error of string
    val entry_of_string: string -> entry
 
 end = struct
 
    (* Error management helpers *)
-   exception Error of string
-   ;;
-   let decoding_error_of_jsonm_error e =
-      Jsonm.pp_error Format.str_formatter e;
-      let e = Format.flush_str_formatter () in
-      Error e
-   ;;
-   let handle_other_cases other_lexeme_message = function
-      | `Lexeme _ -> raise (Error other_lexeme_message)
-      | `End -> raise (Error "Unexpected early end")
-      | `Error e -> raise (decoding_error_of_jsonm_error e)
-      | `Await -> assert false (* the sources are never `Manual *)
-   ;;
+   let wild s j = Helpers.Parsing.handle_other_cases s j
    let unopt name v = match v with
       | Some v -> v
-      | None -> raise (Error ("Missing field " ^ name))
+      | None -> raise (Helpers.Parsing.Error ("Missing field " ^ name))
    ;;
 
 
    (* Decoders for individual fields *)
-   let character jdecoder =
-      match Jsonm.decode jdecoder with
-      | `Lexeme (`String s) -> begin
-         let udecoder = Uutf.decoder (`String s) in
+   let parse_character =
+      let open Helpers.Parsing in
+      string "Expected string value for character field" >|= fun s ->
+      let udecoder = Uutf.decoder (`String s) in
+      match Uutf.decode udecoder with
+      | `Uchar u -> begin
          match Uutf.decode udecoder with
-         | `Uchar u -> begin
-            match Uutf.decode udecoder with
-            | `End -> u
-            | `Uchar _ -> raise (Error "Expected single uchar in character field")
-            | `Malformed _ -> raise (Error "Malformed unicode string in character field")
-            | `Await -> assert false
-            end
-         | `End -> raise (Error "Expected uchar in character field")
-         | `Malformed _ -> raise (Error "Malformed unicode string in character field")
+         | `End -> u
+         | `Uchar _ -> raise (Helpers.Parsing.Error "Expected single uchar in character field")
+         | `Malformed _ -> raise (Helpers.Parsing.Error "Malformed unicode string in character field")
          | `Await -> assert false
          end
-      | j -> handle_other_cases "Expected string value for character field" j
+      | `End -> raise (Helpers.Parsing.Error "Expected uchar in character field")
+      | `Malformed _ -> raise (Helpers.Parsing.Error "Malformed unicode string in character field")
+      | `Await -> assert false
    ;;
 
-   let definition jdecoder =
+   let parse_definition =
+      Helpers.Parsing.string "Expected string in definition field"
+
+   let parse_pinyin jdecoder =
       match Jsonm.decode jdecoder with
-         | `Lexeme (`String s) -> s
-         | j -> handle_other_cases "Expected string in definition field" j
+      | `Lexeme `As as las ->
+         Helpers.Parsing.array
+            (fun l _ -> match l with
+               | `Lexeme (`String py) -> py
+               | j -> wild "Unexpected value in pinyin array" j
+            )
+            las jdecoder
+      | j -> wild "Expected array in pinyin field" j
    ;;
 
-   let pinyin jdecoder =
-      match Jsonm.decode jdecoder with
-      | `Lexeme `As ->
-         let rec loop pys =
-            match Jsonm.decode jdecoder with
-            | `Lexeme (`String py) -> loop (py :: pys)
-            | `Lexeme `Ae -> List.rev pys
-            | j -> handle_other_cases "Unexpected value in pinyin array" j
-         in
-         loop []
-      | j -> handle_other_cases "Expected array in pinyin field" j
-   ;;
-
-   let parse_decomposition s =
+   let parse_decomposition_string s =
       let udecoder = Uutf.decoder (`String s) in
       let get_uchar () =
          match Uutf.decode udecoder with
          | `Uchar u -> u
-         | `Malformed _ -> raise (Error "Malformed unicode string in decomposition field")
-         | `End -> raise (Error "Unexpected end of decomposition string")
+         | `Malformed _ -> raise (Helpers.Parsing.Error "Malformed unicode string in decomposition field")
+         | `End -> raise (Helpers.Parsing.Error "Unexpected end of decomposition string")
          | `Await -> assert false
       in
       let rec loop () =
@@ -159,136 +140,126 @@ end = struct
       in
       loop ()
    ;;
-   let decomposition jdecoder =
-      match Jsonm.decode jdecoder with
-      | `Lexeme (`String s) -> parse_decomposition s
-      | j -> handle_other_cases "Expected string value in decomposition field" j
+   let parse_decomposition =
+      let open Helpers.Parsing in
+      string "Expected string value in decomposition field" >|= fun s ->
+      parse_decomposition_string s
    ;;
 
-   let radical jdecoder =
-      match Jsonm.decode jdecoder with
-      | `Lexeme (`String s) -> begin
-         let udecoder = Uutf.decoder (`String s) in
+   let parse_radical =
+      let open Helpers.Parsing in
+      string "Expected string value in radical field" >|= fun s ->
+      let udecoder = Uutf.decoder (`String s) in
+      match Uutf.decode udecoder with
+      | `Uchar u -> begin
          match Uutf.decode udecoder with
-         | `Uchar u -> begin
-            match Uutf.decode udecoder with
-            | `End -> u
-            | `Uchar _ -> raise (Error "Expected single uchar in radical field")
-            | `Malformed _ -> raise (Error "Malformed unicode string in radical field")
-            | `Await -> assert false
-            end
-         | `End -> raise (Error "Expected uchar in radical field")
-         | `Malformed _ -> raise (Error "Malformed unicode string in radical field")
+         | `End -> u
+         | `Uchar _ -> raise (Helpers.Parsing.Error "Expected single uchar in radical field")
+         | `Malformed _ -> raise (Helpers.Parsing.Error "Malformed unicode string in radical field")
          | `Await -> assert false
          end
-      | j -> handle_other_cases "Expected string value for radical field" j
+      | `End -> raise (Helpers.Parsing.Error "Expected uchar in radical field")
+      | `Malformed _ -> raise (Helpers.Parsing.Error "Malformed unicode string in radical field")
+      | `Await -> assert false
    ;;
 
-   let etymology jdecoder =
-      match Jsonm.decode jdecoder with
-      | `Lexeme `Os ->
-         let rec loop kv =
+   let parse_etymology =
+      let open Helpers.Parsing in
+      eat `Os "Expected string value in radical field" >>= fun () ->
+      let rec loop kv jdecoder =
+         match Jsonm.decode jdecoder with
+         | `Lexeme `Oe -> kv
+         | `Lexeme (`Name k) -> begin
             match Jsonm.decode jdecoder with
-            | `Lexeme `Oe -> kv
-            | `Lexeme (`Name k) -> begin
-               match Jsonm.decode jdecoder with
-               | `Lexeme (`String v) -> loop ((k, v) :: kv)
-               | j -> handle_other_cases "Expected string value in etymology entry" j
-               end
-            | j -> handle_other_cases "Expected a dictionary in etymology field" j
-         in
-         loop []
-      | j -> handle_other_cases "Exepcted string value in decomposition field" j
+            | `Lexeme (`String v) -> loop ((k, v) :: kv) jdecoder
+            | j -> wild "Expected string value in etymology entry" j
+            end
+         | j -> wild "Expected a dictionary in etymology field" j
+      in
+      loop []
    ;;
 
-   let matches jdecoder =
+   let parse_match las jdecoder =
+      Helpers.Parsing.array
+      (fun l jdecoder -> match l with
+         | `Lexeme (`Float f) -> int_of_float f
+         | j -> wild "Expected numbers in matches array array" j
+      )
+      las jdecoder
+   ;;
+   let parse_matches jdecoder =
       match Jsonm.decode jdecoder with
-      | `Lexeme `As ->
-         let decode_match () =
-            let rec loop ns =
-               match Jsonm.decode jdecoder with
-               | `Lexeme (`Float f) ->
-                  let n = int_of_float f in
-                  loop (n :: ns)
-               | `Lexeme `Ae -> List.rev ns
-               | j -> handle_other_cases "Expected numbers in matches array array" j
-            in
-            loop []
-         in
-         let rec loop ms =
-            match Jsonm.decode jdecoder with
-            | `Lexeme `As ->
-               let m = decode_match () in
-               loop (Some m :: ms)
-            | `Lexeme `Null ->
-               loop (None :: ms)
-            | `Lexeme `Ae -> List.rev ms
-            | j -> handle_other_cases "Expected arrays in matches array" j
-         in
-         loop []
-      | j -> handle_other_cases "Expected array in matches field" j
+      | `Lexeme `As as las ->
+         Helpers.Parsing.array
+            (fun l jdecoder -> match l with
+            | `Lexeme `As as las -> Some (parse_match las jdecoder)
+            | `Lexeme `Null -> None
+            | j -> wild "Expected arrays in matches array" j
+            )
+            las jdecoder
+      | j -> wild "Expected array in matches field" j
    ;;
 
 
    let entry_of_string s =
 
       (* Set up *)
-      let character_ref = ref None in
-      let definition_ref = ref None in
-      let pinyin_ref = ref None in
-      let decomposition_ref = ref None in
-      let etymology_ref = ref None in
-      let radical_ref = ref None in
-      let matches_ref = ref None in
-      (* Decoder for a whole entry *)
-      let rec decoder jdecoder =
+      let character = ref None in
+      let definition = ref None in
+      let pinyin = ref None in
+      let decomposition = ref None in
+      let etymology = ref None in
+      let radical = ref None in
+      let matches = ref None in
+      (* Parser for a whole entry *)
+      let rec main_parser : unit Helpers.Parsing.t = fun jdecoder ->
          match Jsonm.decode jdecoder with
          | `Lexeme (`Name "character") ->
-            character_ref := Some (character jdecoder);
-            decoder jdecoder
+            character := Some (parse_character jdecoder);
+            main_parser jdecoder
          | `Lexeme (`Name "definition") ->
-            definition_ref := Some (definition jdecoder);
-            decoder jdecoder
+            definition := Some (parse_definition jdecoder);
+            main_parser jdecoder
          | `Lexeme (`Name "pinyin") ->
-            pinyin_ref := Some (pinyin jdecoder);
-            decoder jdecoder
+            pinyin := Some (parse_pinyin jdecoder);
+            main_parser jdecoder
          | `Lexeme (`Name "decomposition") ->
-            decomposition_ref := Some (decomposition jdecoder);
-            decoder jdecoder
+            decomposition := Some (parse_decomposition jdecoder);
+            main_parser jdecoder
          | `Lexeme (`Name "etymology") ->
-            etymology_ref := Some (etymology jdecoder);
-            decoder jdecoder
+            etymology := Some (parse_etymology jdecoder);
+            main_parser jdecoder
          | `Lexeme (`Name "radical") ->
-            radical_ref := Some (radical jdecoder);
-            decoder jdecoder
+            radical := Some (parse_radical jdecoder);
+            main_parser jdecoder
          | `Lexeme (`Name "matches") ->
-            matches_ref := Some (matches jdecoder);
-            decoder jdecoder
+            matches := Some (parse_matches jdecoder);
+            main_parser jdecoder
          | `Lexeme `Oe -> begin
             match Jsonm.decode jdecoder with
             | `End -> ()
-            | j -> handle_other_cases "Expected end of string after end of object" j
+            | j -> wild "Expected end of string after end of object" j
             end
-         | j -> handle_other_cases "Unexpected lexeme in entry" j
+         | j -> wild "Unexpected lexeme in entry" j
       in
-      let jdecoder = Jsonm.decoder (`String s) in
 
       (* Actual parsing *)
-      begin match Jsonm.decode jdecoder with
-         | `Lexeme `Os -> ()
-         | j -> handle_other_cases "Expected object start at start of string" j
-      end;
-      decoder jdecoder;
+      Helpers.Parsing.(
+         run
+            (eat `Os  "Expected object start at start of string" >>= fun () ->
+             main_parser)
+            (Jsonm.decoder (`String s))
+      );
 
       (* Post-process *)
       {
-         character = unopt "character" !character_ref;
-         definition = !definition_ref;
-         pinyin = unopt "pinyin" !pinyin_ref;
-         decomposition = unopt "decomposition" !decomposition_ref;
-         etymology = !etymology_ref;
-         radical = unopt "radical" !radical_ref;
-         matches = unopt "matches" !matches_ref;
+         character = unopt "character" !character;
+         definition = !definition;
+         pinyin = unopt "pinyin" !pinyin;
+         decomposition = unopt "decomposition" !decomposition;
+         etymology = !etymology;
+         radical = unopt "radical" !radical;
+         matches = unopt "matches" !matches;
       }
    ;;
 
@@ -297,19 +268,18 @@ end
 
 let read ?(path = "./makemeahanzi/dictionary.txt") () =
    let ic = open_in path in
-   let rec line_loop decoded_lines =
+   let rec line_loop parsed_lines =
       try begin
          let line = input_line ic in
          try
-            let decoded_line = Decoding.entry_of_string line in
-            line_loop (decoded_line :: decoded_lines)
+            let parsed_line = Parsing.entry_of_string line in
+            line_loop (parsed_line :: parsed_lines)
          with
-            | Decoding.Error e ->
+            | Helpers.Parsing.Error e ->
                Printf.fprintf stderr "line: %s\nerror: %s\n%!" line e;
-               line_loop decoded_lines
+               line_loop parsed_lines
       end with
-         | End_of_file -> List.rev decoded_lines
-
+         | End_of_file -> List.rev parsed_lines
    in
    let entries = line_loop [] in
    close_in ic;
